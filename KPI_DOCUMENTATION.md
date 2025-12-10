@@ -2,7 +2,9 @@
 
 ## Overview
 
-This RAG pipeline tracks two key performance indicators (KPIs) to measure retrieval quality and system performance.
+This RAG pipeline tracks multiple key performance indicators (KPIs) to measure:
+1. **Retrieval Quality**: How well the system retrieves relevant documents
+2. **Steering Vector Performance**: How effectively steering vectors control output style while maintaining quality
 
 ## KPI 1: Retrieval Precision
 
@@ -139,4 +141,137 @@ The dashboard automatically calculates and displays these KPIs for each search:
 - **Similarity Conversion**: `Similarity = 1 - (Distance / 2.0)`
 - **Relevance Threshold**: 0.45 (configurable)
 - **Measurement**: Real-time during retrieval operations
+
+---
+
+## Steering Vector KPIs
+
+The system also tracks two key performance indicators for steering vector effectiveness:
+
+## KPI 3: Style Adherence Score
+
+### What It Measures
+Style Adherence Score measures how well the generated output matches the intended style (formal, casual, concise, detailed, balanced).
+
+### Why It Matters
+- **Steering Effectiveness**: High scores indicate that steering vectors are successfully controlling output style
+- **Style Validation**: Confirms that the selected style is being applied correctly
+- **User Experience**: Ensures users get summaries in their desired style
+- **System Tuning**: Helps identify if steering strength or style vectors need adjustment
+
+### How It's Calculated
+The score uses a combination of:
+1. **Embedding-based similarity**: Compares output embeddings to style reference text embeddings
+2. **Linguistic features**: Analyzes sentence length, vocabulary, contractions, and style markers
+
+For each style:
+- **Formal**: Longer sentences, formal vocabulary, no contractions
+- **Casual**: Shorter sentences, casual vocabulary, contractions, exclamations
+- **Concise**: Very short sentences, minimal words
+- **Detailed**: Longer sentences, comprehensive vocabulary, extensive explanations
+
+### Interpreting the Numbers
+
+| Score Range | Interpretation | Meaning |
+|-------------|----------------|---------|
+| **0.7 - 1.0 (70-100%)** | Excellent | Output clearly matches intended style |
+| **0.5 - 0.7 (50-70%)** | Good | Output generally matches style |
+| **0.3 - 0.5 (30-50%)** | Moderate | Some style elements present |
+| **< 0.3 (<30%)** | Poor | Output doesn't match intended style |
+
+### Example
+- Target Style: "formal"
+- Generated Output: "The product demonstrates excellent performance characteristics and exhibits superior functionality."
+- **Style Adherence: 0.82 (82%)** ✓ Excellent style match
+
+---
+
+## KPI 4: Content Quality Preservation
+
+### What It Measures
+Content Quality Preservation ensures that steering vectors don't degrade the factual accuracy, coherence, or relevance of generated content. It measures how well the content maintains quality while applying style.
+
+### Why It Matters
+- **Quality Assurance**: Ensures style control doesn't compromise content quality
+- **Coherence Validation**: Confirms that summaries remain coherent and well-structured
+- **Relevance Check**: Validates that content remains relevant to source material and query
+- **Balanced Steering**: Helps find the right steering strength that applies style without degrading quality
+
+### How It's Calculated
+The score combines multiple quality dimensions:
+
+1. **Coherence Score (30%)**: Sentence structure, flow, transition words, consistency
+2. **Relevance Score (30%)**: Semantic similarity to source content and query
+3. **Information Density (20%)**: Appropriate compression ratio (not too sparse, not too verbose)
+4. **Structure Quality (20%)**: Proper formatting, sentence completeness, capitalization
+
+### Interpreting the Numbers
+
+| Score Range | Interpretation | Meaning |
+|-------------|----------------|---------|
+| **0.7 - 1.0 (70-100%)** | Excellent | Content is coherent, relevant, and well-structured |
+| **0.5 - 0.7 (50-70%)** | Good | Content is generally coherent and relevant |
+| **0.3 - 0.5 (30-50%)** | Moderate | Some coherence or relevance issues |
+| **< 0.3 (<30%)** | Poor | Significant quality degradation |
+
+### Example
+- Query: "battery problems"
+- Source Reviews: 5 relevant reviews about battery issues
+- Generated Summary: Coherent summary that addresses the query with proper structure
+- **Content Quality: 0.75 (75%)** ✓ Good quality preservation
+
+---
+
+## Using Steering Vector KPIs in the Dashboard
+
+The dashboard automatically calculates and displays steering vector KPIs:
+
+1. **After each summary generation**, you'll see:
+   - Style Adherence Score percentage
+   - Content Quality Score percentage
+   - KPI Interpretation with detailed explanations
+
+2. **In Statistics mode**, you can view:
+   - Average style adherence across all summaries
+   - Average content quality across all summaries
+   - Performance ranges and trends
+
+3. **KPI Interpretation** expandable section explains:
+   - What each score means for your specific summary
+   - How to interpret the numbers
+   - What actions to take based on the scores
+
+---
+
+## Steering Vector Best Practices
+
+1. **Monitor Both KPIs Together**: 
+   - High style adherence + high quality = optimal steering
+   - High style adherence + low quality = steering may be too strong
+   - Low style adherence + high quality = steering may be too weak
+
+2. **Adjust Steering Strength Based on KPIs**:
+   - If style adherence is low, try increasing steering strength
+   - If content quality drops significantly, reduce steering strength
+   - Find the balance that maintains both metrics
+
+3. **Style-Specific Considerations**:
+   - **Formal/Casual**: Usually maintain good quality scores
+   - **Concise**: May have slightly lower quality (due to brevity) but should still be coherent
+   - **Detailed**: Should maintain high quality with comprehensive information
+
+4. **Use for Quality Control**: 
+   - Low quality scores can indicate steering is too aggressive
+   - Very low style adherence suggests steering vectors may need retraining
+   - Both scores should generally be above 0.5 for acceptable performance
+
+---
+
+## Technical Details - Steering Vector KPIs
+
+- **Embedding Model**: Uses `all-MiniLM-L6-v2` for semantic comparisons (if available)
+- **Fallback Method**: Linguistic feature analysis when embeddings unavailable
+- **Measurement**: Real-time during summary generation
+- **Caching**: Style reference embeddings are cached for performance
+- **Multi-dimensional**: Combines multiple quality signals for robust scoring
 

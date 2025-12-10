@@ -32,6 +32,9 @@ vectorstore/
 *.faiss
 *.pkl
 
+# Steering vector cache
+steering_vectors_cache/
+
 # IDE
 .vscode/
 .idea/

@@ -26,6 +26,22 @@ pip install -r requirements.txt
 MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # Default (no auth needed)
 ```
 
+### First Run Setup
+
+On the first run, the system will automatically:
+
+1. **Download Embedding Model**: The `all-MiniLM-L6-v2` embedding model (~90MB) will be downloaded automatically
+2. **Build Vector Store**: The system will process `Dell RAG compressed.txt` and build a vector store (saved to `vectorstore/` directory)
+3. **Download Language Model**: When you first generate a summary, TinyLlama (~2.3GB) will be downloaded automatically
+4. **Train Steering Vectors**: When you first use a style (formal, casual, concise, detailed), the steering vector will be trained and cached
+
+**Important Notes:**
+- **Internet Required**: First run requires internet connection to download models
+- **Disk Space**: Ensure you have at least 3-4GB free space for models
+- **Time**: First run may take 5-10 minutes depending on internet speed
+- **Caching**: All models and vectors are cached locally, so subsequent runs are much faster
+- **No Authentication**: TinyLlama doesn't require Hugging Face authentication
+
 ## Usage
 
 ### Web Dashboard (Recommended)
@@ -54,6 +70,15 @@ This will open a web browser with a user-friendly interface where you can:
 - **Steering Strength Control**: Adjust how strongly the style is applied (0.0 to 1.0)
 - **Model Selection**: Configure TinyLlama model settings
 - **Real-time Status**: See model loading status and device information
+- **Steering Vector KPIs**: View Style Adherence and Content Quality scores for each summary
+- **Performance Metrics**: Track retrieval and steering vector performance over time
+
+**What Loads Automatically:**
+- ✅ **Vector Store**: Automatically built from `Dell RAG compressed.txt` on first run
+- ✅ **Embedding Model**: Downloads automatically when pipeline initializes
+- ✅ **Language Model**: Downloads automatically when you first generate a summary
+- ✅ **Steering Vectors**: Trained automatically on first use of each style, then cached to disk
+- ✅ **All caches persist**: Everything is saved locally for instant subsequent loads
 
 ### Command-Line Usage
 
@@ -162,6 +187,9 @@ When in interactive mode, you can use:
      - **Concise**: Brief and to the point
      - **Detailed**: Comprehensive with explanations
      - **Balanced**: Standard, neutral summary
+   - **Steering Vector KPIs** are calculated to measure:
+     - **Style Adherence**: How well the output matches the intended style
+     - **Content Quality**: How well the content maintains coherence and relevance
 
 ## Steering Vectors
 
@@ -216,10 +244,15 @@ Steering vectors are a technique that modifies the model's internal activations 
 
 ## Performance Metrics (KPIs)
 
-The system tracks two key performance indicators:
+The system tracks multiple key performance indicators:
 
+### Retrieval KPIs
 1. **Retrieval Precision**: Measures how many retrieved documents are actually relevant
 2. **Semantic Similarity Score**: Measures how semantically close retrieved docs are to the query
+
+### Steering Vector KPIs
+3. **Style Adherence Score**: Measures how well generated output matches the intended style (formal, casual, concise, detailed)
+4. **Content Quality Preservation**: Ensures steering vectors don't degrade factual accuracy, coherence, or relevance
 
 These KPIs are automatically calculated and displayed in the dashboard. See `KPI_DOCUMENTATION.md` for detailed explanations.
 
@@ -237,12 +270,27 @@ This runs:
 
 ## Notes
 
-- The first run will take longer as it builds the vector store
-- Model download happens automatically on first use (2-4GB depending on model)
-- Subsequent runs will be faster as the vector store and model are cached
-- The vector store is saved locally, so you don't need to rebuild it each time
-- KPIs are calculated automatically for each search query
-- Steering vectors are cached after first training for faster subsequent use
+### Automatic Loading & Caching
+
+The system automatically handles loading and caching:
+
+- **Vector Store**: Automatically built on first run, saved to `vectorstore/` directory
+- **Embedding Model**: Downloaded automatically, cached by sentence-transformers library
+- **Language Model**: Downloaded on first summary generation, cached by Hugging Face
+- **Steering Vectors**: Trained on first use of each style, cached to `steering_vectors_cache/` directory
+- **All Caches Persist**: Everything is saved locally, so subsequent runs are instant
+
+### Performance
+
+- **First Run**: 5-10 minutes (downloads models, builds vector store)
+- **Subsequent Runs**: < 10 seconds (everything loads from cache)
+- **First Summary**: 30-60 seconds (downloads language model if not cached)
+- **Subsequent Summaries**: 5-15 seconds (model and vectors loaded from cache)
+
+### KPIs
+
+- KPIs are calculated automatically for each search query and summary generation
+- Steering vector KPIs (Style Adherence and Content Quality) are displayed for each summary
 - See `KPI_DOCUMENTATION.md` for detailed KPI explanations and interpretation guides
 
 ## Troubleshooting

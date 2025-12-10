@@ -3,7 +3,7 @@ RAG Pipeline for searching and summarizing customer reviews.
 """
 import os
 import torch
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -106,6 +106,7 @@ class ReviewRAGPipeline:
         self.model = None
         self.tokenizer = None
         self.steering_vectors = {}  # Cache for steering vector objects
+        self.steering_vectors_cache_dir = "steering_vectors_cache"  # Directory to cache steering vectors
         
         # Load model (lazy loading - will load on first use)
         self._model_loaded = False
@@ -212,6 +213,7 @@ class ReviewRAGPipeline:
     def _get_style_steering_vector(self, style: str = "balanced"):
         """
         Get or create a steering vector object for the specified style.
+        Caches vectors in memory and on disk for faster subsequent loads.
         
         Args:
             style: Style preset ("formal", "casual", "concise", "detailed", "balanced")
@@ -222,13 +224,20 @@ class ReviewRAGPipeline:
         if not STEERING_VECTORS_AVAILABLE or self.model is None:
             return None
         
-        # Return cached vector if available
+        # Return cached vector if available in memory
         if style in self.steering_vectors:
             return self.steering_vectors[style]
         
         # For balanced, return None (no steering)
         if style == "balanced":
             return None
+        
+        # Try to load from disk cache
+        cached_vector = self._load_steering_vector_from_cache(style)
+        if cached_vector is not None:
+            self.steering_vectors[style] = cached_vector
+            print(f"✅ Loaded cached steering vector for style: {style}")
+            return cached_vector
         
         try:
             # Define contrastive pairs for style control
@@ -256,7 +265,7 @@ class ReviewRAGPipeline:
             if style not in style_pairs:
                 return None
             
-            print(f"Training steering vector for style: {style}")
+            print(f"Training steering vector for style: {style} (this may take a moment on first use)...")
             pairs = style_pairs[style]
             
             # Train steering vector
@@ -267,13 +276,41 @@ class ReviewRAGPipeline:
                 show_progress=True,
             )
             
-            # Cache the vector
+            # Cache the vector in memory
             self.steering_vectors[style] = steering_vector
+            
+            # Save to disk cache for future use
+            self._save_steering_vector_to_cache(style, steering_vector)
+            
             return steering_vector
             
         except Exception as e:
             print(f"⚠️ Error creating steering vector for {style}: {e}")
             return None
+    
+    def _save_steering_vector_to_cache(self, style: str, steering_vector):
+        """Save steering vector to disk cache."""
+        try:
+            import pickle
+            os.makedirs(self.steering_vectors_cache_dir, exist_ok=True)
+            cache_path = os.path.join(self.steering_vectors_cache_dir, f"{style}_{self.model_name.replace('/', '_')}.pkl")
+            with open(cache_path, 'wb') as f:
+                pickle.dump(steering_vector, f)
+            print(f"💾 Saved steering vector cache for {style}")
+        except Exception as e:
+            print(f"⚠️ Could not save steering vector cache: {e}")
+    
+    def _load_steering_vector_from_cache(self, style: str):
+        """Load steering vector from disk cache if available."""
+        try:
+            import pickle
+            cache_path = os.path.join(self.steering_vectors_cache_dir, f"{style}_{self.model_name.replace('/', '_')}.pkl")
+            if os.path.exists(cache_path):
+                with open(cache_path, 'rb') as f:
+                    return pickle.load(f)
+        except Exception as e:
+            print(f"⚠️ Could not load steering vector cache: {e}")
+        return None
     
     def _apply_steering_vector(self, steering_vector_obj, multiplier: float = None):
         """
@@ -458,7 +495,6 @@ class ReviewRAGPipeline:
         
         if return_metrics:
             from rag_metrics import RAGEvaluator
-            import time
             evaluator = RAGEvaluator()
             # Note: response_time would need to be measured outside this function
             # For now, we'll just return results with metrics capability
@@ -471,8 +507,9 @@ class ReviewRAGPipeline:
         query: str,
         k: int = 5,
         style: str = "balanced",
-        max_tokens: int = 500
-    ) -> str:
+        max_tokens: int = 500,
+        return_metrics: bool = False
+    ):
         """
         Summarize reviews related to a query.
         
@@ -481,9 +518,10 @@ class ReviewRAGPipeline:
             k: Number of reviews to consider for summarization
             style: Style preset ("formal", "casual", "concise", "detailed", "balanced")
             max_tokens: Maximum tokens for summary
+            return_metrics: If True, return tuple of (summary, steering_metrics)
             
         Returns:
-            Summary string
+            Summary string, or tuple of (summary, SteeringVectorMetrics) if return_metrics=True
         """
         if self.vectorstore is None:
             raise ValueError("Vector store not initialized. Call build_vectorstore() first.")
@@ -492,6 +530,18 @@ class ReviewRAGPipeline:
         relevant_reviews = self.search_reviews(query, k=k)
         
         if not relevant_reviews:
+            if return_metrics:
+                from rag_metrics import SteeringVectorEvaluator
+                evaluator = SteeringVectorEvaluator()
+                # Return empty metrics
+                from rag_metrics import SteeringVectorMetrics
+                empty_metrics = SteeringVectorMetrics(
+                    style_adherence_score=0.0,
+                    content_quality_score=0.0,
+                    style=style,
+                    steering_strength=self.steering_strength
+                )
+                return "No relevant reviews found.", empty_metrics
             return "No relevant reviews found."
         
         # Combine review texts
@@ -555,6 +605,20 @@ Summary:"""
                     max_tokens=max_tokens,
                     temperature=0.7
                 )
+                
+                # Calculate steering vector metrics if requested
+                if return_metrics:
+                    from rag_metrics import SteeringVectorEvaluator
+                    evaluator = SteeringVectorEvaluator()
+                    steering_metrics = evaluator.evaluate_steering_vector(
+                        summary,
+                        style,
+                        relevant_reviews,
+                        query,
+                        self.steering_strength
+                    )
+                    return summary, steering_metrics
+                
                 return summary
             else:
                 raise ValueError("Model not available")
@@ -564,7 +628,22 @@ Summary:"""
             print(f"❌ Error using model: {error_msg}")
             print("📝 Falling back to simple summarization...")
             # Fallback to simple summarization
-            return self._simple_summary(relevant_reviews, query)
+            summary = self._simple_summary(relevant_reviews, query)
+            
+            # Calculate metrics for fallback summary too
+            if return_metrics:
+                from rag_metrics import SteeringVectorEvaluator
+                evaluator = SteeringVectorEvaluator()
+                steering_metrics = evaluator.evaluate_steering_vector(
+                    summary,
+                    style,
+                    relevant_reviews,
+                    query,
+                    self.steering_strength
+                )
+                return summary, steering_metrics
+            
+            return summary
     
     def _simple_summary(self, reviews: List[Dict], query: str) -> str:
         """

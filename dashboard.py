@@ -4,17 +4,16 @@ Streamlit Dashboard for Customer Review RAG Pipeline
 import streamlit as st
 import os
 import time
-import sys
 from io import StringIO
 from contextlib import redirect_stdout
 from data_loader import parse_reviews, prepare_reviews_for_rag
 from rag_pipeline import ReviewRAGPipeline
-from rag_metrics import RAGEvaluator
+from rag_metrics import RAGEvaluator, SteeringVectorEvaluator
 from acceptance_tests import test_happy_path, test_edge_case, test_empty_query
 
 # Try to load config
 try:
-    from config import MODEL_NAME, MODEL_DEVICE, USE_QUANTIZATION, HF_TOKEN
+    from config import HF_TOKEN
     if HF_TOKEN:
         os.environ.setdefault("HF_TOKEN", HF_TOKEN)
         os.environ.setdefault("HUGGINGFACE_TOKEN", HF_TOKEN)
@@ -54,8 +53,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-@st.cache_resource
-def load_pipeline(model_name=None, device="auto", use_quantization=True, hf_token=None):
+@st.cache_resource(show_spinner=False)
+def load_pipeline(model_name=None, device="auto", use_quantization=True, hf_token=None, _cache_version="v2"):
     """Load the RAG pipeline (cached for performance)."""
     # Get model config from config or environment
     try:
@@ -286,16 +285,30 @@ def main():
         st.success("✅ Pipeline Loaded")
         st.info("Vector store is ready for queries")
         
+        # Cache clear button (useful after code updates)
+        if st.button("🔄 Clear Cache & Reload", help="Clear cached pipeline (use after code updates)"):
+            load_pipeline.clear()
+            st.rerun()
+        
         st.divider()
         st.markdown("### 📊 Performance Metrics")
         if 'evaluator' not in st.session_state:
             st.session_state.evaluator = RAGEvaluator()
+        if 'steering_evaluator' not in st.session_state:
+            st.session_state.steering_evaluator = SteeringVectorEvaluator()
         
         if st.session_state.evaluator.metrics_history:
             stats = st.session_state.evaluator.get_summary_stats()
             st.metric("Avg Precision", f"{stats.get('avg_precision', 0):.2%}")
             st.metric("Avg Similarity", f"{stats.get('avg_similarity', 0):.2%}")
             st.metric("Total Queries", stats.get('total_queries', 0))
+        
+        if st.session_state.steering_evaluator.metrics_history:
+            steering_stats = st.session_state.steering_evaluator.get_summary_stats()
+            st.divider()
+            st.markdown("### 🎨 Steering Vector Metrics")
+            st.metric("Avg Style Adherence", f"{steering_stats.get('avg_style_adherence', 0):.2%}")
+            st.metric("Avg Content Quality", f"{steering_stats.get('avg_content_quality', 0):.2%}")
     
     # Main content area
     if mode == "Search":
@@ -455,15 +468,105 @@ def main():
                 style = st.session_state.get('style', 'balanced')
                 with st.spinner(f"Generating summary with {model_name.split('/')[-1]} (style: {style})..."):
                     try:
-                        summary = pipeline.summarize_reviews(
+                        # Generate summary with metrics
+                        result = pipeline.summarize_reviews(
                             query,
                             k=num_results,
-                            style=style
+                            style=style,
+                            return_metrics=True
                         )
+                        
+                        if isinstance(result, tuple):
+                            summary, steering_metrics = result
+                        else:
+                            summary = result
+                            steering_metrics = None
                         
                         st.success("Summary Generated")
                         st.markdown("### Summary")
                         st.markdown(summary)
+                        
+                        # Display Steering Vector KPIs
+                        if steering_metrics:
+                            st.markdown("---")
+                            st.markdown("### 🎨 Steering Vector KPIs")
+                            
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                # Style Adherence Score
+                                style_score = steering_metrics.style_adherence_score
+                                if style_score >= 0.7:
+                                    delta_color = "normal"
+                                    help_text = "Excellent style match - Output clearly matches intended style"
+                                elif style_score >= 0.5:
+                                    delta_color = "normal"
+                                    help_text = "Good style match - Output generally matches style"
+                                elif style_score >= 0.3:
+                                    delta_color = "off"
+                                    help_text = "Moderate match - Some style elements present"
+                                else:
+                                    delta_color = "inverse"
+                                    help_text = "Poor match - Output doesn't match intended style"
+                                
+                                st.metric(
+                                    "Style Adherence Score",
+                                    f"{style_score:.2%}",
+                                    help=help_text
+                                )
+                            
+                            with col2:
+                                # Content Quality Score
+                                quality_score = steering_metrics.content_quality_score
+                                if quality_score >= 0.7:
+                                    delta_color = "normal"
+                                    help_text = "Excellent quality - Content is coherent, relevant, and well-structured"
+                                elif quality_score >= 0.5:
+                                    delta_color = "normal"
+                                    help_text = "Good quality - Content is generally coherent and relevant"
+                                elif quality_score >= 0.3:
+                                    delta_color = "off"
+                                    help_text = "Moderate quality - Some coherence or relevance issues"
+                                else:
+                                    delta_color = "inverse"
+                                    help_text = "Poor quality - Significant quality degradation"
+                                
+                                st.metric(
+                                    "Content Quality Score",
+                                    f"{quality_score:.2%}",
+                                    help=help_text
+                                )
+                            
+                            # KPI Interpretation
+                            with st.expander("📊 Steering Vector KPI Interpretation", expanded=False):
+                                st.markdown(f"""
+                                **Style Adherence Score** ({style_score:.1%}):
+                                - Measures how well the generated output matches the intended style ({style})
+                                - **Why it matters**: High scores indicate effective steering vector application
+                                - **Interpretation**: 
+                                    - **>70%**: Excellent - Output clearly matches intended style
+                                    - **50-70%**: Good - Output generally matches style
+                                    - **30-50%**: Moderate - Some style elements present
+                                    - **<30%**: Poor - Output doesn't match intended style
+                                
+                                **Content Quality Preservation** ({quality_score:.1%}):
+                                - Ensures that steering vectors don't degrade factual accuracy, coherence, or relevance
+                                - **Why it matters**: Validates that style control maintains content quality
+                                - **Interpretation**:
+                                    - **>70%**: Excellent - Content is coherent, relevant, and well-structured
+                                    - **50-70%**: Good - Content is generally coherent and relevant
+                                    - **30-50%**: Moderate - Some coherence or relevance issues
+                                    - **<30%**: Poor - Significant quality degradation
+                                
+                                **Current Settings**:
+                                - Style: {style.title()}
+                                - Steering Strength: {steering_metrics.steering_strength:.1f}
+                                """)
+                            
+                            # Store metrics in evaluator for statistics
+                            if 'steering_evaluator' not in st.session_state:
+                                st.session_state.steering_evaluator = SteeringVectorEvaluator()
+                            st.session_state.steering_evaluator.metrics_history.append(steering_metrics)
                         
                         # Show source reviews count and style info
                         with st.expander("View Source Information"):
@@ -516,6 +619,46 @@ def main():
               - **>60%**: Excellent semantic match - Documents are highly relevant
               - **40-60%**: Good match - Documents are relevant
               - **<40%**: Poor match - Documents may not be semantically related to query
+            """)
+        
+        # Show Steering Vector KPIs
+        if 'steering_evaluator' in st.session_state and st.session_state.steering_evaluator.metrics_history:
+            st.markdown("---")
+            st.subheader("🎨 Steering Vector Performance KPIs")
+            steering_stats = st.session_state.steering_evaluator.get_summary_stats()
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Average Style Adherence", f"{steering_stats.get('avg_style_adherence', 0):.2%}")
+                st.caption(f"Range: {steering_stats.get('min_style_adherence', 0):.2%} - {steering_stats.get('max_style_adherence', 0):.2%}")
+            with col2:
+                st.metric("Average Content Quality", f"{steering_stats.get('avg_content_quality', 0):.2%}")
+                st.caption(f"Range: {steering_stats.get('min_content_quality', 0):.2%} - {steering_stats.get('max_content_quality', 0):.2%}")
+            
+            st.caption(f"Total Evaluations: {steering_stats.get('total_evaluations', 0)}")
+            
+            st.markdown("---")
+            st.markdown("### Steering Vector KPI Explanations")
+            st.markdown("""
+            **1. Style Adherence Score**
+            - **What it measures**: How well the generated output matches the intended style (formal, casual, concise, detailed)
+            - **Why it matters**: High scores indicate effective steering vector application. This validates that
+              the steering vectors are successfully controlling output style without requiring model retraining.
+            - **What the numbers mean**:
+              - **>70%**: Excellent - Output clearly matches intended style
+              - **50-70%**: Good - Output generally matches style
+              - **30-50%**: Moderate - Some style elements present
+              - **<30%**: Poor - Output doesn't match intended style
+            
+            **2. Content Quality Preservation**
+            - **What it measures**: Ensures that steering vectors don't degrade factual accuracy, coherence, or relevance
+            - **Why it matters**: Validates that style control maintains content quality. High scores indicate that
+              steering successfully applies style without compromising the information quality or coherence.
+            - **What the numbers mean**:
+              - **>70%**: Excellent - Content is coherent, relevant, and well-structured
+              - **50-70%**: Good - Content is generally coherent and relevant
+              - **30-50%**: Moderate - Some coherence or relevance issues
+              - **<30%**: Poor - Significant quality degradation
             """)
         
         st.markdown("---")
