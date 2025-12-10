@@ -33,8 +33,8 @@ def test_happy_path(silent=False):
         print("Note: Precision threshold adjusted for cosine distance scores")
         print("-" * 70)
     
-    # Initialize pipeline
-    pipeline = ReviewRAGPipeline(use_gemini=False)  # Disable Gemini for faster testing
+    # Initialize pipeline (model not needed for search tests)
+    pipeline = ReviewRAGPipeline()
     pipeline.load_vectorstore("vectorstore")
     
     evaluator = RAGEvaluator()
@@ -112,8 +112,8 @@ def test_edge_case(silent=False):
         print("Reason: Query is completely unrelated to customer reviews")
         print("-" * 70)
     
-    # Initialize pipeline
-    pipeline = ReviewRAGPipeline(use_gemini=False)
+    # Initialize pipeline (model not needed for search tests)
+    pipeline = ReviewRAGPipeline()
     pipeline.load_vectorstore("vectorstore")
     
     evaluator = RAGEvaluator()

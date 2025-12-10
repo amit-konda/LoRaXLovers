@@ -2,19 +2,30 @@
 RAG Pipeline for searching and summarizing customer reviews.
 """
 import os
-from typing import List, Dict, Optional
+import torch
+from typing import List, Dict, Optional, Tuple
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.schema import Document
 
-# Use google-generativeai directly (more reliable)
+# Try to import transformers and steering vectors
 try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import BitsAndBytesConfig
+    TRANSFORMERS_AVAILABLE = True
 except ImportError:
-    GEMINI_AVAILABLE = False
-    genai = None
+    TRANSFORMERS_AVAILABLE = False
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
+    BitsAndBytesConfig = None
+
+try:
+    from steering_vectors import train_steering_vector
+    STEERING_VECTORS_AVAILABLE = True
+except ImportError:
+    STEERING_VECTORS_AVAILABLE = False
+    train_steering_vector = None
 
 
 class ReviewRAGPipeline:
@@ -25,23 +36,56 @@ class ReviewRAGPipeline:
     def __init__(
         self,
         embedding_model: str = "all-MiniLM-L6-v2",
-        use_gemini: bool = True,
-        gemini_api_key: Optional[str] = None,
-        gemini_model: Optional[str] = None
+        model_name: Optional[str] = None,
+        device: Optional[str] = None,
+        use_quantization: Optional[bool] = None,
+        quantization_bits: int = 8,
+        steering_strength: float = 0.5,
+        steering_layer: int = -1,
+        hf_token: Optional[str] = None
     ):
         """
         Initialize the RAG pipeline.
         
         Args:
             embedding_model: Name of the sentence transformer model
-            use_gemini: Whether to use Google Gemini for LLM (default: True)
-            gemini_api_key: Google Gemini API key
-            gemini_model: Gemini model name (default: gemini-pro)
+            model_name: Hugging Face model identifier (default from config)
+            device: Device to use ("cuda", "cpu", or "auto")
+            use_quantization: Whether to use quantization (default from config)
+            quantization_bits: Bits for quantization (8 or 4)
+            steering_strength: Strength of steering vectors (0.0 to 1.0)
+            steering_layer: Layer to apply steering (-1 for auto)
+            hf_token: Hugging Face token for model access
         """
         self.embedding_model = embedding_model
-        self.use_gemini = use_gemini
-        self.gemini_api_key = gemini_api_key or os.getenv("GEMINI_API_KEY")
-        self.gemini_model = gemini_model or os.getenv("GEMINI_MODEL", "gemini-pro")
+        
+        # Load config defaults
+        try:
+            from config import (
+                MODEL_NAME, MODEL_DEVICE, USE_QUANTIZATION,
+                QUANTIZATION_BITS, STEERING_VECTOR_STRENGTH,
+                STEERING_VECTOR_LAYER, HF_TOKEN
+            )
+            self.model_name = model_name or MODEL_NAME
+            self.device = device or MODEL_DEVICE
+            self.use_quantization = use_quantization if use_quantization is not None else USE_QUANTIZATION
+            self.quantization_bits = quantization_bits or QUANTIZATION_BITS
+            self.steering_strength = steering_strength or STEERING_VECTOR_STRENGTH
+            self.steering_layer = steering_layer if steering_layer != -1 else STEERING_VECTOR_LAYER
+            self.hf_token = hf_token or HF_TOKEN
+        except ImportError:
+            # Fallback defaults
+            self.model_name = model_name or "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+            self.device = device or "auto"
+            self.use_quantization = use_quantization if use_quantization is not None else True
+            self.quantization_bits = quantization_bits or 8
+            self.steering_strength = steering_strength or 0.5
+            self.steering_layer = steering_layer if steering_layer != -1 else -1
+            self.hf_token = hf_token or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
+        
+        # Auto-detect device
+        if self.device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         # Initialize embeddings
         print(f"Loading embedding model: {embedding_model}")
@@ -59,11 +103,278 @@ class ReviewRAGPipeline:
         )
         
         self.vectorstore = None
-        self.qa_chain = None
+        self.model = None
+        self.tokenizer = None
+        self.steering_vectors = {}  # Cache for steering vector objects
         
-        # Set Gemini API key if provided
-        if self.gemini_api_key:
-            os.environ["GEMINI_API_KEY"] = self.gemini_api_key
+        # Load model (lazy loading - will load on first use)
+        self._model_loaded = False
+    
+    def _load_model_with_quantization(self):
+        """Load the language model with optional quantization."""
+        if self._model_loaded:
+            return
+        
+        if not TRANSFORMERS_AVAILABLE:
+            print("⚠️ Transformers library not available. Model will not be loaded.")
+            return
+        
+        print(f"Loading model: {self.model_name}")
+        print(f"Device: {self.device}")
+        
+        try:
+            # Configure quantization if enabled
+            quantization_config = None
+            if self.use_quantization and self.device == "cpu":
+                if self.quantization_bits == 8:
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_8bit=True,
+                        llm_int8_threshold=6.0
+                    )
+                elif self.quantization_bits == 4:
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.float16,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="nf4"
+                    )
+            
+            # Load tokenizer
+            print("Loading tokenizer...")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,
+                token=self.hf_token,
+                trust_remote_code=True
+            )
+            
+            # Set pad token if not present
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            
+            # Set padding side to left for generation
+            self.tokenizer.padding_side = "left"
+            
+            # Load model
+            print("Loading model (this may take a while on first run)...")
+            model_kwargs = {
+                "token": self.hf_token,
+                "trust_remote_code": True,
+            }
+            
+            # Check if accelerate is available for quantization
+            try:
+                import accelerate
+                accelerate_available = True
+            except ImportError:
+                accelerate_available = False
+                if quantization_config:
+                    print("⚠️ Accelerate not available, disabling quantization")
+                    quantization_config = None
+            
+            if quantization_config and accelerate_available:
+                # Quantization requires device_map="auto" and accelerate
+                model_kwargs["quantization_config"] = quantization_config
+                model_kwargs["device_map"] = "auto"
+            else:
+                # Load without quantization
+                model_kwargs["torch_dtype"] = torch.float16 if self.device == "cuda" else torch.float32
+                # For CPU, don't use device_map or low_cpu_mem_usage (requires accelerate)
+                # Just load normally and move to device manually
+                if self.device != "cpu":
+                    model_kwargs["device_map"] = self.device
+            
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                **model_kwargs
+            )
+            
+            # Move to device if not using device_map
+            if not (quantization_config and accelerate_available):
+                if hasattr(self.model, 'device'):
+                    # Model already has device attribute
+                    pass
+                else:
+                    # Manually move to device
+                    self.model = self.model.to(self.device)
+            
+            # Set to eval mode for inference
+            self.model.eval()
+            
+            self._model_loaded = True
+            print(f"✅ Model loaded successfully on {self.device}")
+            
+        except Exception as e:
+            print(f"❌ Error loading model: {e}")
+            print("💡 Falling back to simple summarization")
+            self.model = None
+            self.tokenizer = None
+    
+    def _get_style_steering_vector(self, style: str = "balanced"):
+        """
+        Get or create a steering vector object for the specified style.
+        
+        Args:
+            style: Style preset ("formal", "casual", "concise", "detailed", "balanced")
+            
+        Returns:
+            Steering vector object (with .apply() method) or None
+        """
+        if not STEERING_VECTORS_AVAILABLE or self.model is None:
+            return None
+        
+        # Return cached vector if available
+        if style in self.steering_vectors:
+            return self.steering_vectors[style]
+        
+        # For balanced, return None (no steering)
+        if style == "balanced":
+            return None
+        
+        try:
+            # Define contrastive pairs for style control
+            style_pairs = {
+                "formal": [
+                    ("The product demonstrates excellent performance", "This thing works great!"),
+                    ("The device exhibits superior functionality", "It's really good"),
+                    ("The customer experience was satisfactory", "It was okay I guess"),
+                ],
+                "casual": [
+                    ("This thing works great!", "The product demonstrates excellent performance"),
+                    ("It's really good", "The device exhibits superior functionality"),
+                    ("It was okay I guess", "The customer experience was satisfactory"),
+                ],
+                "concise": [
+                    ("Good product. Fast delivery.", "This is an excellent product that was delivered very quickly and exceeded my expectations."),
+                    ("Works well. Recommend.", "The product functions as expected and I would highly recommend it to others."),
+                ],
+                "detailed": [
+                    ("This is an excellent product that was delivered very quickly and exceeded my expectations.", "Good product. Fast delivery."),
+                    ("The product functions as expected and I would highly recommend it to others.", "Works well. Recommend."),
+                ],
+            }
+            
+            if style not in style_pairs:
+                return None
+            
+            print(f"Training steering vector for style: {style}")
+            pairs = style_pairs[style]
+            
+            # Train steering vector
+            steering_vector = train_steering_vector(
+                self.model,
+                self.tokenizer,
+                pairs,
+                show_progress=True,
+            )
+            
+            # Cache the vector
+            self.steering_vectors[style] = steering_vector
+            return steering_vector
+            
+        except Exception as e:
+            print(f"⚠️ Error creating steering vector for {style}: {e}")
+            return None
+    
+    def _apply_steering_vector(self, steering_vector_obj, multiplier: float = None):
+        """
+        Apply steering vector to model using the library's context manager.
+        
+        Args:
+            steering_vector_obj: The steering vector object returned by train_steering_vector
+            multiplier: Optional multiplier to adjust steering strength (defaults to self.steering_strength)
+        """
+        if steering_vector_obj is None or self.model is None:
+            return None
+        
+        # Use the steering vector's apply method as a context manager
+        # The multiplier controls the strength of steering
+        multiplier = multiplier if multiplier is not None else self.steering_strength
+        return steering_vector_obj.apply(self.model, multiplier=multiplier)
+    
+    def _generate_with_steering(
+        self,
+        prompt: str,
+        style: str = "balanced",
+        max_tokens: int = 500,
+        temperature: float = 0.7
+    ) -> str:
+        """
+        Generate text with steering vector applied using the library's context manager.
+        
+        Args:
+            prompt: Input prompt
+            style: Style preset
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            
+        Returns:
+            Generated text
+        """
+        if self.model is None or self.tokenizer is None:
+            raise ValueError("Model not loaded. Cannot generate text.")
+        
+        # Get steering vector object
+        steering_vector_obj = self._get_style_steering_vector(style)
+        
+        # Apply steering using the library's context manager
+        # This automatically handles hook registration and cleanup
+        steering_context = self._apply_steering_vector(steering_vector_obj, multiplier=self.steering_strength)
+        
+        # Tokenize input
+        inputs = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
+        # Get device from model
+        model_device = next(self.model.parameters()).device if hasattr(self.model, 'parameters') else torch.device(self.device)
+        inputs = {k: v.to(model_device) for k, v in inputs.items()}
+        
+        # Generate within the steering context
+        if steering_context is not None:
+            # Use context manager if steering is applied
+            with steering_context:
+                with torch.inference_mode():
+                    outputs = self.model.generate(
+                        **inputs,
+                        max_new_tokens=max_tokens,
+                        temperature=temperature,
+                        do_sample=temperature > 0,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                    )
+        else:
+            # No steering, generate normally
+            with torch.inference_mode():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    temperature=temperature,
+                    do_sample=temperature > 0,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+        
+        # Decode output
+        generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Remove input prompt from output
+        # Handle both regular prompts and chat template prompts
+        if generated_text.startswith(prompt):
+            generated_text = generated_text[len(prompt):].strip()
+        else:
+            # For chat templates, try to extract just the assistant response
+            # Look for common chat markers
+            if "<|assistant|>" in generated_text:
+                parts = generated_text.split("<|assistant|>")
+                if len(parts) > 1:
+                    generated_text = parts[-1].strip()
+            elif "### Assistant:" in generated_text or "Assistant:" in generated_text:
+                # Try to find the assistant response
+                for marker in ["### Assistant:", "Assistant:"]:
+                    if marker in generated_text:
+                        parts = generated_text.split(marker)
+                        if len(parts) > 1:
+                            generated_text = parts[-1].strip()
+                            break
+        
+        return generated_text
     
     def build_vectorstore(self, reviews: List[Dict], save_path: Optional[str] = None):
         """
@@ -155,13 +466,21 @@ class ReviewRAGPipeline:
         
         return results
     
-    def summarize_reviews(self, query: str, k: int = 5) -> str:
+    def summarize_reviews(
+        self,
+        query: str,
+        k: int = 5,
+        style: str = "balanced",
+        max_tokens: int = 500
+    ) -> str:
         """
         Summarize reviews related to a query.
         
         Args:
             query: Search query
             k: Number of reviews to consider for summarization
+            style: Style preset ("formal", "casual", "concise", "detailed", "balanced")
+            max_tokens: Maximum tokens for summary
             
         Returns:
             Summary string
@@ -182,7 +501,17 @@ class ReviewRAGPipeline:
         ])
         
         # Create summary prompt
-        summary_prompt = f"""Based on the following customer reviews, provide a comprehensive summary that addresses the query: "{query}"
+        style_instructions = {
+            "formal": "Use formal, professional language.",
+            "casual": "Use casual, conversational language.",
+            "concise": "Be brief and to the point.",
+            "detailed": "Provide comprehensive details and explanations.",
+            "balanced": ""
+        }
+        style_instruction = style_instructions.get(style, "")
+        
+        # Format prompt for TinyLlama chat format if needed
+        base_prompt = f"""Based on the following customer reviews, provide a comprehensive summary that addresses the query: "{query}"
 
 Reviews:
 {review_texts}
@@ -192,59 +521,50 @@ Please provide a summary that:
 2. Highlights common themes and patterns
 3. Mentions the overall sentiment (positive/negative/neutral)
 4. Includes specific examples when relevant
+{style_instruction}
 
 Summary:"""
         
-        # Generate summary using Google Gemini
-        if self.use_gemini and self.gemini_api_key:
+        # Use chat template if available (for TinyLlama and other chat models)
+        if self.tokenizer and hasattr(self.tokenizer, 'apply_chat_template'):
             try:
-                if not GEMINI_AVAILABLE:
-                    raise ImportError("google-generativeai package not installed. Run: pip install google-generativeai")
-                
-                # Use REST API directly (most reliable)
-                import requests
-                
-                # Use the correct model name format for Gemini API
-                # Model names should be like: gemini-2.5-flash, gemini-2.5-pro, etc.
-                model_name = self.gemini_model
-                # Ensure model name doesn't have "models/" prefix
-                if model_name.startswith("models/"):
-                    model_name = model_name.replace("models/", "")
-                
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.gemini_api_key}"
-                
-                payload = {
-                    "contents": [{
-                        "parts": [{"text": summary_prompt}]
-                    }]
-                }
-                
-                headers = {"Content-Type": "application/json"}
-                response = requests.post(url, json=payload, headers=headers, timeout=30)
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    summary = result['candidates'][0]['content']['parts'][0]['text']
-                else:
-                    error_text = response.text[:500]
-                    raise Exception(f"API returned {response.status_code}: {error_text}")
-            except Exception as e:
-                error_msg = str(e)
-                print(f"❌ Error using Gemini API: {error_msg}")
-                if "401" in error_msg or "invalid" in error_msg.lower() or "API_KEY" in error_msg:
-                    print("💡 Gemini API key authentication failed. Verify your API key in config.py")
-                elif "quota" in error_msg.lower() or "limit" in error_msg.lower():
-                    print("💡 API quota exceeded. Check your Gemini API usage limits.")
-                else:
-                    print(f"💡 Error details: {error_msg}")
-                # Fallback to simple summarization
-                print("📝 Falling back to simple summarization...")
-                summary = self._simple_summary(relevant_reviews, query)
+                # Try to use chat template
+                messages = [{"role": "user", "content": base_prompt}]
+                summary_prompt = self.tokenizer.apply_chat_template(
+                    messages, 
+                    tokenize=False, 
+                    add_generation_prompt=True
+                )
+            except Exception:
+                # Fallback to regular prompt if chat template fails
+                summary_prompt = base_prompt
         else:
-            # Use simple summarization
-            summary = self._simple_summary(relevant_reviews, query)
+            summary_prompt = base_prompt
         
-        return summary
+        # Try to use model for summarization
+        try:
+            # Load model if not already loaded
+            if not self._model_loaded:
+                self._load_model_with_quantization()
+            
+            if self.model is not None and self.tokenizer is not None:
+                print(f"Generating summary with {self.model_name} (style: {style})...")
+                summary = self._generate_with_steering(
+                    summary_prompt,
+                    style=style,
+                    max_tokens=max_tokens,
+                    temperature=0.7
+                )
+                return summary
+            else:
+                raise ValueError("Model not available")
+                
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Error using model: {error_msg}")
+            print("📝 Falling back to simple summarization...")
+            # Fallback to simple summarization
+            return self._simple_summary(relevant_reviews, query)
     
     def _simple_summary(self, reviews: List[Dict], query: str) -> str:
         """

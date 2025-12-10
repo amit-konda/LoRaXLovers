@@ -1,14 +1,16 @@
 # Customer Review RAG Pipeline
 
-A Retrieval-Augmented Generation (RAG) pipeline for quickly searching and summarizing customer reviews from a text file.
+A Retrieval-Augmented Generation (RAG) pipeline for quickly searching and summarizing customer reviews from a text file, powered by local language models with style-based steering vectors.
 
 ## Features
 
 - **Fast Search**: Semantic search through customer reviews using vector embeddings
-- **Intelligent Summarization**: Generate summaries of reviews based on queries
-- **Interactive Mode**: Command-line interface for easy querying
+- **AI-Powered Summarization**: Generate intelligent summaries using local language models (TinyLlama)
+- **Style Control with Steering Vectors**: Control summary style (formal, casual, concise, detailed) using advanced steering vector techniques
+- **Interactive Dashboard**: Beautiful web interface with real-time controls
+- **Interactive CLI**: Command-line interface for easy querying
 - **Efficient Storage**: FAISS vector store for fast similarity search
-- **Flexible**: Works with local embeddings or OpenAI API
+- **CPU Optimized**: Works efficiently on CPU with optional quantization
 
 ## Installation
 
@@ -18,11 +20,10 @@ A Retrieval-Augmented Generation (RAG) pipeline for quickly searching and summar
 pip install -r requirements.txt
 ```
 
-2. **Google Gemini API is already configured!** Your API key is set in `config.py`.
+2. **Model Configuration**: The default model is TinyLlama (no authentication required). You can change it in `config.py` if needed:
 
-The default model is `gemini-2.5-flash`. You can change it in `config.py` or via environment variable:
-```bash
-export GEMINI_MODEL="gemini-2.5-pro"  # For more powerful model
+```python
+MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # Default (no auth needed)
 ```
 
 ## Usage
@@ -35,17 +36,31 @@ Launch the interactive web dashboard:
 streamlit run dashboard.py
 ```
 
+Or use the convenience script:
+
+```bash
+./run_dashboard.sh
+```
+
 This will open a web browser with a user-friendly interface where you can:
 - 🔍 Search for reviews
-- 📝 Generate AI summaries
+- 📝 Generate AI summaries with style control
+- 🎨 Adjust steering vectors (style and strength)
 - 📊 View review statistics
+- 🧪 Run acceptance tests
+
+**Dashboard Features:**
+- **Style Selector**: Choose from balanced, formal, casual, concise, or detailed summaries
+- **Steering Strength Control**: Adjust how strongly the style is applied (0.0 to 1.0)
+- **Model Selection**: Configure TinyLlama model settings
+- **Real-time Status**: See model loading status and device information
 
 ### Command-Line Usage
 
 Run the interactive mode:
 
 ```bash
-python main.py
+python3 main.py
 ```
 
 This will:
@@ -56,7 +71,7 @@ This will:
 ### Command-Line Options
 
 ```bash
-python main.py [OPTIONS]
+python3 main.py [OPTIONS]
 ```
 
 **Options:**
@@ -66,39 +81,54 @@ python main.py [OPTIONS]
 - `--query QUERY`: Search query (required for search/summarize modes)
 - `--k NUMBER`: Number of results to return (default: 5)
 - `--mode MODE`: Mode to run in - "search", "summarize", or "interactive" (default: "interactive")
-- `--use-gemini`: Use Google Gemini for summarization (default: enabled)
-- `--no-gemini`: Disable Gemini and use simple summarization
-- `--gemini-api-key KEY`: Gemini API key (already set in config.py)
-- `--gemini-model NAME`: Gemini model name (default: gemini-2.5-flash)
+- `--model MODEL`: Model name override (e.g., "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+- `--device DEVICE`: Device to use - "auto", "cpu", or "cuda" (default: auto-detect)
+- `--quantize`: Enable 8-bit quantization (recommended for CPU)
+- `--no-quantize`: Disable quantization
+- `--steering-strength FLOAT`: Steering vector strength (0.0 to 1.0, default: 0.5)
+- `--style STYLE`: Summary style - "balanced", "formal", "casual", "concise", or "detailed" (default: balanced)
+- `--hf-token TOKEN`: Hugging Face token for model access
 
 ### Examples
 
 **Search for reviews:**
 ```bash
-python main.py --mode search --query "battery life issues" --k 10
+python3 main.py --mode search --query "battery life issues" --k 10
 ```
 
-**Summarize reviews:**
+**Summarize reviews with default style:**
 ```bash
-python main.py --mode summarize --query "overheating problems" --k 5
+python3 main.py --mode summarize --query "overheating problems" --k 5
 ```
 
-**Use Gemini for AI-powered summaries:**
+**Summarize with specific style:**
 ```bash
-# Using Gemini (default, API key from config.py)
-python3 main.py --mode summarize --query "customer satisfaction" --k 5
+# Formal style
+python3 main.py --mode summarize --query "customer satisfaction" --style formal --k 5
 
-# With a different Gemini model
+# Casual style
+python3 main.py --mode summarize --query "product quality" --style casual --k 5
+
+# Concise style
+python3 main.py --mode summarize --query "common issues" --style concise --k 5
+```
+
+**Use different model (if configured):**
+```bash
+# Use a different model (must be compatible)
 python3 main.py --mode summarize --query "customer satisfaction" \
-  --gemini-model "gemini-2.5-pro" --k 5
+  --model "TinyLlama/TinyLlama-1.1B-Chat-v1.0" --k 5
+```
 
-# Disable Gemini (use simple summarization)
-python3 main.py --mode summarize --query "customer satisfaction" --no-gemini --k 5
+**Enable quantization for CPU:**
+```bash
+python3 main.py --mode summarize --query "customer satisfaction" \
+  --quantize --k 5
 ```
 
 **Rebuild the vector store:**
 ```bash
-python main.py --rebuild
+python3 main.py --rebuild
 ```
 
 ### Interactive Mode Commands
@@ -108,6 +138,7 @@ When in interactive mode, you can use:
 - Type a query directly to search: `battery problems`
 - Use `search:` prefix: `search: display issues`
 - Use `summarize:` prefix: `summarize: overall customer satisfaction`
+- Use `summarize:` with style: `summarize: customer satisfaction --style formal`
 - Type `quit` or `exit` to exit
 
 ## How It Works
@@ -122,7 +153,24 @@ When in interactive mode, you can use:
 
 5. **Search**: When you query, the system finds the most similar review chunks using cosine similarity.
 
-6. **Summarization**: Relevant reviews are combined and summarized, either using a simple algorithm or OpenAI's GPT models.
+6. **Summarization with Steering Vectors**: 
+   - Relevant reviews are retrieved and combined
+   - A local language model (TinyLlama) generates the summary
+   - **Steering vectors** are applied to control the style:
+     - **Formal**: Professional, formal language
+     - **Casual**: Conversational, friendly tone
+     - **Concise**: Brief and to the point
+     - **Detailed**: Comprehensive with explanations
+     - **Balanced**: Standard, neutral summary
+
+## Steering Vectors
+
+Steering vectors are a technique that modifies the model's internal activations during generation to control output style without retraining. The system includes:
+
+- **Pre-trained style vectors**: For formal, casual, concise, and detailed styles
+- **Adjustable strength**: Control how strongly the style is applied (0.0 to 1.0)
+- **Layer-specific application**: Applied at optimal transformer layers for best results
+- **Real-time control**: Change style on-the-fly in the dashboard or CLI
 
 ## Project Structure
 
@@ -131,11 +179,12 @@ When in interactive mode, you can use:
 ├── dashboard.py            # Streamlit web dashboard
 ├── main.py                 # Main application script
 ├── data_loader.py          # Functions for loading and parsing reviews
-├── rag_pipeline.py         # RAG pipeline implementation
+├── rag_pipeline.py         # RAG pipeline implementation with steering vectors
 ├── rag_metrics.py          # RAG performance metrics and KPIs
 ├── acceptance_tests.py     # Acceptance tests for KPIs
-├── config.py               # API key configuration
+├── config.py               # Model and steering configuration
 ├── requirements.txt        # Python dependencies
+├── run_dashboard.sh        # Convenience script to start dashboard
 ├── README.md              # This file
 ├── KPI_DOCUMENTATION.md   # Detailed KPI explanations
 ├── Dell RAG compressed.txt # Customer reviews data file
@@ -148,8 +197,22 @@ When in interactive mode, you can use:
 - `faiss-cpu`: Vector similarity search library
 - `sentence-transformers`: For generating embeddings
 - `pandas`: Data manipulation
-- `google-generativeai`: For Google Gemini API integration
+- `torch`: PyTorch for model inference
+- `transformers`: Hugging Face transformers library
+- `accelerate`: Efficient model loading
+- `steering-vectors`: Steering vector implementation
+- `optimum` & `bitsandbytes`: Quantization support
 - `streamlit`: Web dashboard framework
+
+## Model Information
+
+### TinyLlama 1.1B (Default)
+- **Pros**: Fast, no authentication required, works on CPU
+- **Memory**: ~0.7GB with quantization, ~2.3GB without
+- **Speed**: Very fast inference on CPU
+- **Quality**: Good for most use cases
+- **Setup**: No setup required, works immediately
+- **License**: Apache 2.0 (open source)
 
 ## Performance Metrics (KPIs)
 
@@ -175,9 +238,11 @@ This runs:
 ## Notes
 
 - The first run will take longer as it builds the vector store
-- Subsequent runs will be faster as the vector store is loaded from disk
+- Model download happens automatically on first use (2-4GB depending on model)
+- Subsequent runs will be faster as the vector store and model are cached
 - The vector store is saved locally, so you don't need to rebuild it each time
 - KPIs are calculated automatically for each search query
+- Steering vectors are cached after first training for faster subsequent use
 - See `KPI_DOCUMENTATION.md` for detailed KPI explanations and interpretation guides
 
 ## Troubleshooting
@@ -190,8 +255,54 @@ This runs:
 - Check that `Dell RAG compressed.txt` is in the current directory
 - Or specify the correct path with `--data-file`
 
-**OpenAI API errors**
-- Make sure your API key is set correctly
-- Check that you have API credits available
-- The pipeline will fall back to simple summarization if OpenAI fails
+**Error: "Model loading failed"**
+- Check your internet connection (model downloads on first use)
+- TinyLlama doesn't require authentication, so this shouldn't be an auth issue
+- Verify you have enough disk space (model is ~2.3GB)
 
+**Error: "Out of memory"**
+- Enable quantization: `--quantize` or set `USE_QUANTIZATION=true` in config
+- Close other applications to free up RAM
+- TinyLlama is already optimized for low memory usage
+
+**Error: "Accelerate required"**
+- Install accelerate: `pip install accelerate`
+- Or disable quantization if you don't need it
+
+**Model generation is slow**
+- This is normal on CPU - expect 30-100 tokens/second
+- Use quantization to speed up slightly
+- Consider using GPU if available (set `--device cuda`)
+
+**Steering vectors not working**
+- Make sure the model is loaded successfully
+- Check that steering-vectors library is installed: `pip install steering-vectors`
+- First use will train vectors (takes a moment), subsequent uses are cached
+
+## Configuration
+
+Edit `config.py` to customize:
+
+```python
+# Model selection
+MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+
+# Device (auto, cpu, cuda)
+MODEL_DEVICE = "auto"
+
+# Quantization (for CPU efficiency)
+USE_QUANTIZATION = True
+QUANTIZATION_BITS = 8  # 8 or 4
+
+# Steering vectors
+STEERING_VECTOR_STRENGTH = 0.5  # 0.0 to 1.0
+STEERING_VECTOR_LAYER = -1  # -1 for auto-select
+
+# Hugging Face token (optional, not required for TinyLlama)
+HF_TOKEN = None
+```
+
+## License
+
+This project uses open-source models:
+- TinyLlama: Apache 2.0 License

@@ -9,11 +9,10 @@ from rag_pipeline import ReviewRAGPipeline
 
 # Try to load config if available
 try:
-    from config import GEMINI_API_KEY, GEMINI_MODEL
-    if GEMINI_API_KEY:
-        os.environ.setdefault("GEMINI_API_KEY", GEMINI_API_KEY)
-    if GEMINI_MODEL:
-        os.environ.setdefault("GEMINI_MODEL", GEMINI_MODEL)
+    from config import MODEL_NAME, MODEL_DEVICE, USE_QUANTIZATION, HF_TOKEN
+    if HF_TOKEN:
+        os.environ.setdefault("HF_TOKEN", HF_TOKEN)
+        os.environ.setdefault("HUGGINGFACE_TOKEN", HF_TOKEN)
 except ImportError:
     pass
 
@@ -58,41 +57,58 @@ def main():
         help="Mode: search, summarize, or interactive"
     )
     parser.add_argument(
-        "--use-gemini",
+        "--model",
+        type=str,
+        help="Model name (default from config.py, e.g., TinyLlama/TinyLlama-1.1B-Chat-v1.0)"
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        choices=["auto", "cpu", "cuda"],
+        default="auto",
+        help="Device to use (default: auto-detect)"
+    )
+    parser.add_argument(
+        "--quantize",
         action="store_true",
-        default=True,
-        help="Use Google Gemini for summarization (default: enabled)"
+        default=None,
+        help="Enable 8-bit quantization (recommended for CPU)"
     )
     parser.add_argument(
-        "--no-gemini",
+        "--no-quantize",
         action="store_false",
-        dest="use_gemini",
-        help="Disable Gemini and use simple summarization"
+        dest="quantize",
+        help="Disable quantization"
     )
     parser.add_argument(
-        "--gemini-api-key",
-        type=str,
-        help="Gemini API key (or set GEMINI_API_KEY env var, default from config.py)"
+        "--steering-strength",
+        type=float,
+        help="Steering vector strength (0.0 to 1.0, default: 0.5)"
     )
     parser.add_argument(
-        "--gemini-model",
+        "--style",
         type=str,
-        help="Gemini model name (default: gemini-pro)"
+        choices=["balanced", "formal", "casual", "concise", "detailed"],
+        default="balanced",
+        help="Summary style preset (default: balanced)"
+    )
+    parser.add_argument(
+        "--hf-token",
+        type=str,
+        help="Hugging Face token for model access (or set HF_TOKEN env var)"
     )
     
     args = parser.parse_args()
     
     # Initialize RAG pipeline
-    gemini_key = args.gemini_api_key or os.getenv("GEMINI_API_KEY")
-    gemini_model = args.gemini_model or os.getenv("GEMINI_MODEL", "gemini-pro")
-    
-    # Default to using Gemini if API key is available
-    use_gemini = args.use_gemini and gemini_key is not None
+    hf_token = args.hf_token or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
     
     pipeline = ReviewRAGPipeline(
-        use_gemini=use_gemini,
-        gemini_api_key=gemini_key,
-        gemini_model=gemini_model
+        model_name=args.model,
+        device=args.device,
+        use_quantization=args.quantize if hasattr(args, 'quantize') else None,
+        steering_strength=args.steering_strength,
+        hf_token=hf_token
     )
     
     # Build or load vector store
@@ -130,7 +146,7 @@ def main():
         if not args.query:
             print("Error: --query is required for summarize mode")
             sys.exit(1)
-        summarize_reviews(pipeline, args.query, args.k)
+        summarize_reviews(pipeline, args.query, args.k, args.style)
 
 
 def search_reviews(pipeline: ReviewRAGPipeline, query: str, k: int):
@@ -153,13 +169,14 @@ def search_reviews(pipeline: ReviewRAGPipeline, query: str, k: int):
         print(f"\nMetadata: {result['metadata']}")
 
 
-def summarize_reviews(pipeline: ReviewRAGPipeline, query: str, k: int):
+def summarize_reviews(pipeline: ReviewRAGPipeline, query: str, k: int, style: str = "balanced"):
     """Summarize relevant reviews."""
     print(f"\n{'='*60}")
     print(f"Summarizing reviews for: '{query}'")
+    print(f"Style: {style}")
     print(f"{'='*60}\n")
     
-    summary = pipeline.summarize_reviews(query, k=k)
+    summary = pipeline.summarize_reviews(query, k=k, style=style)
     print(summary)
 
 
@@ -172,6 +189,8 @@ def interactive_mode(pipeline: ReviewRAGPipeline, k: int):
     print("  - Type a search query to find relevant reviews")
     print("  - Type 'search: <query>' to search for reviews")
     print("  - Type 'summarize: <query>' to get a summary")
+    print("  - Type 'summarize: <query> --style <style>' to get a styled summary")
+    print("    (styles: balanced, formal, casual, concise, detailed)")
     print("  - Type 'quit' or 'exit' to exit")
     print("\n" + "="*60 + "\n")
     
@@ -190,8 +209,10 @@ def interactive_mode(pipeline: ReviewRAGPipeline, k: int):
                 query = user_input[7:].strip()
                 search_reviews(pipeline, query, k)
             elif user_input.startswith('summarize:'):
-                query = user_input[10:].strip()
-                summarize_reviews(pipeline, query, k)
+                parts = user_input[10:].strip().split('--style')
+                query = parts[0].strip()
+                style = parts[1].strip() if len(parts) > 1 else "balanced"
+                summarize_reviews(pipeline, query, k, style)
             else:
                 # Default to search
                 search_reviews(pipeline, user_input, k)

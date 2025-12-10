@@ -14,11 +14,10 @@ from acceptance_tests import test_happy_path, test_edge_case, test_empty_query
 
 # Try to load config
 try:
-    from config import GEMINI_API_KEY, GEMINI_MODEL
-    if GEMINI_API_KEY:
-        os.environ.setdefault("GEMINI_API_KEY", GEMINI_API_KEY)
-    if GEMINI_MODEL:
-        os.environ.setdefault("GEMINI_MODEL", GEMINI_MODEL)
+    from config import MODEL_NAME, MODEL_DEVICE, USE_QUANTIZATION, HF_TOKEN
+    if HF_TOKEN:
+        os.environ.setdefault("HF_TOKEN", HF_TOKEN)
+        os.environ.setdefault("HUGGINGFACE_TOKEN", HF_TOKEN)
 except ImportError:
     pass
 
@@ -56,16 +55,27 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 @st.cache_resource
-def load_pipeline(use_gemini=True):
+def load_pipeline(model_name=None, device="auto", use_quantization=True, hf_token=None):
     """Load the RAG pipeline (cached for performance)."""
-    # Get Gemini API key from config or environment
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-pro")
+    # Get model config from config or environment
+    try:
+        from config import MODEL_NAME, MODEL_DEVICE, USE_QUANTIZATION, HF_TOKEN
+        model_name = model_name or MODEL_NAME
+        device = device if device != "auto" else MODEL_DEVICE
+        use_quantization = use_quantization if use_quantization is not None else USE_QUANTIZATION
+        hf_token = hf_token or HF_TOKEN
+    except ImportError:
+        # Fallback to environment variables if config.py not available
+        model_name = model_name or os.getenv("MODEL_NAME", "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+        device = device if device != "auto" else os.getenv("MODEL_DEVICE", "auto")
+        use_quantization = use_quantization if use_quantization is not None else True
+        hf_token = hf_token or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
     
     pipeline = ReviewRAGPipeline(
-        use_gemini=use_gemini and gemini_key is not None,
-        gemini_api_key=gemini_key,
-        gemini_model=gemini_model
+        model_name=model_name,
+        device=device,
+        use_quantization=use_quantization,
+        hf_token=hf_token
     )
     
     vectorstore_path = "vectorstore"
@@ -143,11 +153,19 @@ def main():
     # Header
     st.markdown('<h1 class="main-header">📊 Customer Review RAG Dashboard</h1>', unsafe_allow_html=True)
     
-    # Get Gemini settings from sidebar (will be set later)
-    use_gemini_setting = st.session_state.get('use_gemini', True)
+    # Get model settings from sidebar (will be set later)
+    model_name = st.session_state.get('model_name', None)
+    device = st.session_state.get('device', "auto")
+    use_quantization = st.session_state.get('use_quantization', True)
+    hf_token = st.session_state.get('hf_token', None)
     
     # Load pipeline
-    pipeline, success = load_pipeline(use_gemini=use_gemini_setting)
+    pipeline, success = load_pipeline(
+        model_name=model_name,
+        device=device,
+        use_quantization=use_quantization,
+        hf_token=hf_token
+    )
     
     if not success or pipeline is None:
         st.error("Failed to initialize the RAG pipeline. Please check the error messages above.")
@@ -171,30 +189,97 @@ def main():
             help="Number of reviews to retrieve"
         )
         
-        use_gemini = st.checkbox(
-            "Use Gemini for Summarization",
+        st.divider()
+        st.markdown("### 🤖 Model Configuration")
+        
+        # Model selection
+        model_options = {
+            "TinyLlama 1.1B": "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+        }
+        selected_model_label = st.selectbox(
+            "Model",
+            options=list(model_options.keys()),
+            index=0,
+            help="Select the language model for summarization"
+        )
+        model_name = model_options[selected_model_label]
+        st.session_state['model_name'] = model_name
+        
+        # Device selection
+        device = st.selectbox(
+            "Device",
+            options=["auto", "cpu", "cuda"],
+            index=0,
+            help="Device to run the model on (auto-detect recommended)"
+        )
+        st.session_state['device'] = device
+        
+        # Quantization
+        use_quantization = st.checkbox(
+            "Enable Quantization (8-bit)",
             value=True,
-            help="Enable Google Gemini AI summarization (API key from config.py)"
+            help="Reduce memory usage (recommended for CPU)"
         )
-        st.session_state['use_gemini'] = use_gemini
+        st.session_state['use_quantization'] = use_quantization
         
-        if use_gemini:
-            gemini_key = os.getenv("GEMINI_API_KEY", "")
-            gemini_model = os.getenv("GEMINI_MODEL", "gemini-pro")
-            if gemini_key:
-                st.info(f"✅ Gemini API key configured: {gemini_key[:8]}...")
-                st.info(f"📱 Model: {gemini_model}")
-            else:
-                st.warning("⚠️ Gemini API key not found. Check config.py")
-        
-        gemini_model_input = st.text_input(
-            "Gemini Model (Optional)",
-            value=os.getenv("GEMINI_MODEL", "gemini-pro"),
-            help="Gemini model name (e.g., gemini-pro, gemini-pro-vision)"
+        # Hugging Face token (not needed for TinyLlama, but kept for future models)
+        hf_token = st.text_input(
+            "Hugging Face Token (Optional)",
+            type="password",
+            help="Not required for TinyLlama. Get token at huggingface.co/settings/tokens if needed for other models"
         )
+        if hf_token:
+            st.session_state['hf_token'] = hf_token
+            os.environ["HF_TOKEN"] = hf_token
+            os.environ["HUGGINGFACE_TOKEN"] = hf_token
         
-        if gemini_model_input:
-            os.environ["GEMINI_MODEL"] = gemini_model_input
+        # Model status
+        st.divider()
+        st.markdown("### 📊 Model Status")
+        if pipeline and pipeline._model_loaded:
+            st.success("✅ Model Loaded")
+            st.info(f"📱 Model: {model_name.split('/')[-1]}")
+            st.info(f"🖥️ Device: {pipeline.device.upper()}")
+            if use_quantization:
+                st.info("⚡ Quantization: Enabled (8-bit)")
+        elif pipeline:
+            st.warning("⏳ Model will load on first summarization")
+        else:
+            st.error("❌ Pipeline not initialized")
+        
+        st.divider()
+        st.markdown("### 🎨 Steering Vector Controls")
+        
+        # Style selection (syncs with main area)
+        style_options = ["balanced", "formal", "casual", "concise", "detailed"]
+        current_style = st.session_state.get('style', 'balanced')
+        try:
+            style_index = style_options.index(current_style)
+        except ValueError:
+            style_index = 0
+        
+        style = st.selectbox(
+            "Summary Style",
+            options=style_options,
+            index=style_index,
+            help="Control the style of generated summaries (also available in Summarize tab)"
+        )
+        st.session_state['style'] = style
+        
+        # Steering strength (syncs with main area)
+        steering_strength = st.slider(
+            "Steering Strength",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.get('steering_strength', 0.5),
+            step=0.1,
+            help="Strength of style steering (0.0 = no steering, 1.0 = maximum)"
+        )
+        st.session_state['steering_strength'] = steering_strength
+        
+        # Update pipeline steering if available
+        if pipeline:
+            pipeline.steering_strength = steering_strength
         
         st.divider()
         st.markdown("### 📈 Pipeline Status")
@@ -298,6 +383,66 @@ def main():
         st.header("📝 Summarize Reviews")
         st.markdown("Get AI-powered summaries of reviews based on your query")
         
+        # Style controls in main area for easy access
+        st.markdown("### 🎨 Style & Steering Controls")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Get current style index
+            style_options = ["balanced", "formal", "casual", "concise", "detailed"]
+            current_style = st.session_state.get('style', 'balanced')
+            try:
+                style_index = style_options.index(current_style)
+            except ValueError:
+                style_index = 0
+            
+            style = st.selectbox(
+                "📝 Summary Style",
+                options=style_options,
+                index=style_index,
+                help="Control the style of generated summaries",
+                key="summarize_style"
+            )
+            st.session_state['style'] = style
+            
+            # Style descriptions
+            style_descriptions = {
+                "balanced": "⚖️ Standard, neutral summary",
+                "formal": "👔 Professional, formal language",
+                "casual": "💬 Conversational, friendly tone",
+                "concise": "📋 Brief and to the point",
+                "detailed": "📚 Comprehensive with explanations"
+            }
+            st.caption(style_descriptions.get(style, ""))
+        
+        with col2:
+            steering_strength = st.slider(
+                "🎛️ Steering Strength",
+                min_value=0.0,
+                max_value=1.0,
+                value=st.session_state.get('steering_strength', 0.5),
+                step=0.1,
+                help="Strength of style steering (0.0 = no steering, 1.0 = maximum effect)",
+                key="summarize_steering"
+            )
+            st.session_state['steering_strength'] = steering_strength
+            # Update pipeline steering if available
+            if pipeline:
+                pipeline.steering_strength = steering_strength
+            
+            # Visual indicator for steering strength
+            if steering_strength == 0.0:
+                st.caption("🚫 No style steering applied")
+            elif steering_strength < 0.3:
+                st.caption("🔵 Light steering")
+            elif steering_strength < 0.7:
+                st.caption("🟡 Moderate steering")
+            else:
+                st.caption("🔴 Strong steering")
+        
+        st.divider()
+        
         query = st.text_input(
             "Summarization Query",
             placeholder="e.g., overall customer satisfaction, common issues, product quality...",
@@ -306,22 +451,28 @@ def main():
         
         if st.button("📊 Generate Summary", type="primary"):
             if query:
-                with st.spinner("Generating summary with Gemini..."):
+                # Get style from session state (set by the selectbox above)
+                style = st.session_state.get('style', 'balanced')
+                with st.spinner(f"Generating summary with {model_name.split('/')[-1]} (style: {style})..."):
                     try:
-                        # Ensure pipeline uses Gemini if enabled
-                        if st.session_state.get('use_gemini', True):
-                            pipeline.use_gemini = True
-                        summary = pipeline.summarize_reviews(query, k=num_results)
+                        summary = pipeline.summarize_reviews(
+                            query,
+                            k=num_results,
+                            style=style
+                        )
                         
                         st.success("Summary Generated")
                         st.markdown("### Summary")
                         st.markdown(summary)
                         
-                        # Show source reviews count
+                        # Show source reviews count and style info
                         with st.expander("View Source Information"):
                             st.info(f"Summary based on top {num_results} most relevant reviews")
+                            st.info(f"Style: {style.title()}")
+                            st.info(f"Steering Strength: {st.session_state.get('steering_strength', 0.5):.1f}")
                     except Exception as e:
                         st.error(f"Error during summarization: {e}")
+                        st.info("💡 Tip: If model loading fails, check your Hugging Face token and internet connection.")
             else:
                 st.warning("Please enter a query for summarization")
     

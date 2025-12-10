@@ -1,9 +1,26 @@
+# Core RAG dependencies
 langchain>=0.1.0
 langchain-community>=0.0.20
 faiss-cpu>=1.7.4
 sentence-transformers>=2.2.2
+
+# Data processing
 pandas>=2.0.0
 numpy>=1.24.0
+
+# Web dashboard
 streamlit>=1.28.0
-google-generativeai>=0.3.0
+
+# Deep learning and model inference
+torch>=2.0.0
+transformers>=4.40.0
+accelerate>=0.25.0
+huggingface-hub>=0.20.0
+
+# Steering vectors for style control
+steering-vectors>=0.1.0
+
+# Quantization support (optional, for CPU efficiency - can be skipped if not using quantization)
+optimum>=1.14.0
+bitsandbytes>=0.41.0
 

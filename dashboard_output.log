@@ -1,0 +1,38 @@
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://10.160.151.63:8501
+  External URL: http://66.112.242.2:8501
+
+  For better performance, install the Watchdog module:
+
+  $ xcode-select --install
+  $ pip install watchdog
+            
+/Users/amitk./Desktop/aiproject/rag_pipeline.py:93: LangChainDeprecationWarning: The class `HuggingFaceEmbeddings` was deprecated in LangChain 0.2.2 and will be removed in 1.0. An updated version of the class exists in the langchain-huggingface package and should be used instead. To use it run `pip install -U langchain-huggingface` and import as `from langchain_huggingface import HuggingFaceEmbeddings`.
+  self.embeddings = HuggingFaceEmbeddings(
+2025-12-10 16:12:54.851 Uncaught app exception
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.8/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+    result = func()
+  File "/Library/Frameworks/Python.framework/Versions/3.8/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+    exec(code, module.__dict__)
+  File "/Users/amitk./Desktop/aiproject/dashboard.py", line 11, in <module>
+    from rag_pipeline import ReviewRAGPipeline
+  File "/Users/amitk./Desktop/aiproject/rag_pipeline.py", line 380
+    def build_vectorstore(self, reviews: List[Dict], save_path: Optional[str] = None):
+    ^
+IndentationError: unexpected unindent
+2025-12-10 16:12:58.927 Uncaught app exception
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.8/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+    result = func()
+  File "/Library/Frameworks/Python.framework/Versions/3.8/lib/python3.8/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+    exec(code, module.__dict__)
+  File "/Users/amitk./Desktop/aiproject/dashboard.py", line 11, in <module>
+    from rag_pipeline import ReviewRAGPipeline
+  File "/Users/amitk./Desktop/aiproject/rag_pipeline.py", line 380
+    def build_vectorstore(self, reviews: List[Dict], save_path: Optional[str] = None):
+    ^
+IndentationError: unexpected unindent
